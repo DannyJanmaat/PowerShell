@@ -1,0 +1,76 @@
+  [cmdletbinding()]
+  Param(
+    [Parameter(Position=0,Mandatory=$False)][Int]$Top=5,
+    [Parameter(Position=1,Mandatory=$False)][String]$ComputerName
+  )
+
+  Begin{
+
+    If ($ComputerName){
+      Try{
+        Invoke-Command $ComputerName -ErrorA Stop{
+          $Env:COMPUTERNAME
+        }
+      }Catch{
+        Write-Host "Computer $ComputerName not reachable"
+        Break
+      }
+    }
+
+  }
+
+  Process{
+
+    Function ServiceTopMemoryUsage{
+      [cmdletbinding()]
+      Param(
+        [Parameter(Position=0,Mandatory)][Int]$Number,
+        [Parameter(Position=1,Mandatory=$false)][String]$ComputerName
+      )
+        Begin{};Process{
+          $Services=Get-CimInstance Win32_Service|Where{$PSItem.State-Eq'Running'}
+            If($ComputerName){
+              $Services=Invoke-Command $ComputerName{
+                $Using:Services
+              }
+            }
+          $ServiceInfo=@()
+            Foreach($Service in $Services){$ServiceName=$Service.Name;$ProcessId=$Service.ProcessId;$Process=Get-Process -Id $ProcessId -ErrorA SilentlyContinue
+              If($Process){$MemoryUsageGB=[Math]::Round($Process.WorkingSet64/1GB,2);$ServiceInfo+=New-Object PSObject -Property @{'ServiceName'=(Get-Service -Name $ServiceName).DisplayName;'MemoryUsageGB'=$MemoryUsageGB;'ProcessID'=$ProcessId}}
+            };$ServiceInfo|Sort MemoryUsageGB -Desc|Select -F $Top|FT * -AutoSize
+        };End{}
+    }
+ 
+    Function ServiceTopCPUUsage{
+      [cmdletbinding()]
+      Param(
+        [Parameter(Position=0,Mandatory)][Int]$Number,
+        [Parameter(Position=1,Mandatory=$False)][String]$ComputerName
+      )
+        Begin{};Process{
+          $ServicePIDs=Get-CimInstance Win32_Service|Where{$PSItem.ProcessId-Ne0}|Select Name,DisplayName,ProcessId;$LogicalCPUs=(Get-CimInstance Win32_Processor).NumberOfLogicalProcessors
+            If($ComputerName){
+              $ServicePIDs=Invoke-Command $ComputerName {
+                $Using:ServicePIDs
+              }
+            }
+          $logicalProcessors=''
+          If($LogicalCPUs-Is[array]){$NumberofLogicalCPUs=@();ForEach($LogicalCPU in $LogicalCPUs){$NumberOfLogicalCPUs+=$LogicalCPU};$LogicalProcessors=($NumberOfLogicalCPUs|Measure-Object -S).Sum}Else{$LogicalProcessors=$LogicalCPUs}
+          Get-CimInstance Win32_PerfFormattedData_PerfProc_Process|Where{($ServicePIDs.ProcessId-Contains$PSItem.IDProcess)-And($PSItem.Name-NotMatch"_total|idle")}|Select @{N="Name";E={($ServicePIDs|Where ProcessId -Eq $PSItem.IDProcess).DisplayName}}, `
+          @{N="CPUPercentUsage";E={[Math]::Round(($PSItem.PercentProcessorTime/($logicalProcessors * 100))*100,1)}},IDProcess|Sort CPUPercentUsage -Desc|Select -F $Top|FT * -AutoSize
+        };End{}
+    }
+
+    If ($ComputerName){
+      ServiceTopMemoryUsage $Top $ComputerName
+      ServiceTopCPUUsage $Top $ComputerName
+    }Else{
+      ServiceTopMemoryUsage $Top
+      ServiceTopCPUUsage $Top
+    }
+
+  }
+
+  End{
+
+  }
